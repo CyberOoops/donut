@@ -72,8 +72,8 @@ class DonutTrainer(VarScopeObject):
                  feed_dict=None, valid_feed_dict=None,
                  missing_data_injection_rate=0.01,
                  use_regularization_loss=True,
-                 max_epoch=256, max_step=None, batch_size=256,
-                 valid_batch_size=1024, valid_step_freq=100,
+                 max_epoch=30, max_step=None, batch_size=256,
+                 valid_batch_size=1024, valid_step_freq=1000,
                  initial_lr=0.001, lr_anneal_epochs=10, lr_anneal_factor=0.75,
                  optimizer=tf.train.AdamOptimizer, optimizer_params=None,
                  grad_clip_norm=10.0, check_numerics=True,
@@ -185,7 +185,7 @@ class DonutTrainer(VarScopeObject):
         """
         return self._model
 
-    def fit(self, values, labels, missing, mean, std, excludes=None,
+    def fit(self, values, labels, missing, mean, std,train_values,valid_values,train_labels,valid_labels,train_missing,valid_missing,train_exclude,valid_exclude, excludes=None,
             valid_portion=0.3, summary_dir=None):
         """
         Train the :class:`Donut` model with given data.
@@ -227,14 +227,18 @@ class DonutTrainer(VarScopeObject):
                              format(missing.shape, values.shape))
 
         n = int(len(values) * valid_portion)
-        train_values, v_x = values[:-n], values[-n:]
-        train_labels, valid_labels = labels[:-n], labels[-n:]
-        train_missing, valid_missing = missing[:-n], missing[-n:]
+        # train_values, v_x = values[:-n], values[-n:]
+        # train_labels, valid_labels = labels[:-n], labels[-n:]
+        # train_missing, valid_missing = missing[:-n], missing[-n:]
+        train_values, v_x = train_values,valid_values
+        train_labels, valid_labels = train_labels,valid_labels
+        train_missing, valid_missing =train_missing,valid_missing
         v_y = np.logical_or(valid_labels, valid_missing).astype(np.int32)
         if excludes is None:
             train_excludes, valid_excludes = None, None
         else:
-            train_excludes, valid_excludes = excludes[:-n], excludes[-n:]
+            #train_excludes, valid_excludes = excludes[:-n], excludes[-n:]
+            train_excludes, valid_excludes = train_exclude,valid_exclude
 
         # data augmentation object and the sliding window iterator
         aug = MissingDataInjection(mean, std, self._missing_data_injection_rate)

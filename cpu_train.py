@@ -1,35 +1,42 @@
 import numpy as np
 import pandas as pd
 from donut import complete_timestamp, standardize_kpi
-import sys
+
 import os
 import time
-
+import sys
+import importlib
+importlib.reload(sys)
 # Read the raw data.
 # file = os.path.join('./data/AIOPS2018/',sys.argv[1])
 # df = pd.read_csv(file)
 # timestamp, values, labels = df['timestamp'],df['value'],df['label']
-file_list = os.listdir(sys.argv[1])
+data_name = sys.argv[1]
+values = np.load(os.path.join('./data/','{}_value.npy'.format(data_name)))
+labels = np.load(os.path.join('./data/','{}_label.npy'.format(data_name)))
+missing = np.load(os.path.join('./data/','{}_missing.npy'.format(data_name)))
 
-timestamp = np.array([])
-values = np.array([])
-labels = np.array([])
-missing = np.array([])
+print(values.shape,labels.shape,missing.shape)
 
-for file in file_list:
-    df_now = pd.read_csv(os.path.join(sys.argv[1],file))
-    timestamp_now, values_now, labels_now = df_now['timestamp'],df_now['value'],df_now['label']
-    timestamp_now, missing_now, (values_now, labels_now) = \
-    complete_timestamp(timestamp_now, (values_now, labels_now))
-    values_now = values_now.astype(float)
-    missing2_now = np.isnan(values_now)
-    values_now[np.where(missing2_now==1)[0]] = 0
-    missing_now = np.logical_or(missing_now,missing2_now)
+# timestamp = np.array([])
+# values = np.array([])
+# labels = np.array([])
+# missing = np.array([])
 
-    timestamp = np.append(timestamp,timestamp_now)
-    values = np.append(values,values_now)
-    labels = np.append(labels,labels_now)
-    missing = np.append(missing,missing_now)
+# for file in file_list:
+#     df_now = pd.read_csv(os.path.join(sys.argv[1],file))
+#     timestamp_now, values_now, labels_now = df_now['timestamp'],df_now['value'],df_now['label']
+#     timestamp_now, missing_now, (values_now, labels_now) = \
+#     complete_timestamp(timestamp_now, (values_now, labels_now))
+#     values_now = values_now.astype(float)
+#     missing2_now = np.isnan(values_now)
+#     values_now[np.where(missing2_now==1)[0]] = 0
+#     missing_now = np.logical_or(missing_now,missing2_now)
+
+#     timestamp = np.append(timestamp,timestamp_now)
+#     values = np.append(values,values_now)
+#     labels = np.append(labels,labels_now)
+#     missing = np.append(missing,missing_now)
 
 
 # If there is no label, simply use all zeros.
@@ -88,11 +95,47 @@ trainer = DonutTrainer(model=model, model_vs=model_vs)
 predictor = DonutPredictor(model)
 
 
-def point_adjust(score, label , thres):
+def calc_p2p(predict, actual):
+    tp = np.sum(predict * actual)
+    tn = np.sum((1 - predict) * (1 - actual))
+    fp = np.sum(predict * (1 - actual))
+    fn = np.sum((1 - predict) * actual)
+
+    precision = (tp + 0.000001) / (tp + fp + 0.000001)
+    recall = (tp + 0.000001) / (tp + fn + 0.000001)
+    f1 = (2 * precision * recall) / (precision + recall)
+    return f1, precision, recall, tp, tn, fp, fn
+
+
+def get_range_proba(predict, label, delay=7):
+    splits = np.where(label[1:] != label[:-1])[0] + 1
+    is_anomaly = label[0] == 1
+    new_predict = np.array(predict)
+    pos = 0
+
+    for sp in splits:
+        if is_anomaly:
+            if 1 in predict[pos : min(pos + delay + 1, sp)]:
+                new_predict[pos:sp] = 1
+            else:
+                new_predict[pos:sp] = 0
+        is_anomaly = not is_anomaly
+        pos = sp
+    sp = len(label)
+
+    if is_anomaly:  # anomaly in the end
+        if 1 in predict[pos : min(pos + delay + 1, sp)]:
+            new_predict[pos:sp] = 1
+        else:
+            new_predict[pos:sp] = 0
+
+    return new_predict
+
+def point_adjust(score, label, thres):
     predict = score >= thres
     actual = label > 0.1
     anomaly_state = False
-    
+
     for i in range(len(score)):
         if actual[i] and predict[i] and not anomaly_state:
             anomaly_state = True
@@ -107,43 +150,53 @@ def point_adjust(score, label , thres):
             predict[i] = True
     return predict, actual
 
-def calc_p2p(predict, actual):
-    tp = np.sum(predict * actual)
-    tn = np.sum((1-predict) * (1-actual))
-    fp = np.sum(predict * (1-actual))
-    fn = np.sum((1-predict) * actual)
-    
-    precision = (tp+0.000001) / (tp + fp + 0.000001)
-    recall = (tp+0.000001) / (tp + fn + 0.000001)
-    f1 = (2 * precision * recall)/ (precision + recall )
-    #print(tp,fp,fn,f1)
-    return f1, precision, recall, tp, tn, fp, fn
+def best_f1(score, label):
+    # max_th = float(score.max())
+    max_th = np.percentile(score, 99.91)
+    print("max_th", max_th)
+    min_th = float(score.min())
+    grain = 2000
+    max_f1_1 = 0.0
+    max_f1_th_1 = 0.0
+    max_pre = 0.0
+    max_recall = 0.0
+    for i in range(0, grain + 3):
+        #print(i)
+        thres = (max_th - min_th) / grain * i + min_th
+        predict, actual = point_adjust(score, label, thres=thres)
+        f1, precision, recall, tp, tn, fp, fn = calc_p2p(predict, actual)
+        if f1 > max_f1_1:
+            max_f1_1 = f1
+            max_f1_th_1 = thres
+            max_pre = precision
+            max_recall = recall
+    predict, actual = point_adjust(score, label, max_f1_th_1)
+    return max_f1_1, max_pre,max_recall,predict
 
-def delay_point_adjust(score, label, thres,delay=7):
-
-    predict = score >= thres
-    splits = np.where(label[1:] != label[:-1])[0] + 1
-    is_anomaly = label[0] == 1
-    new_predict = np.array(predict)
-    pos = 0
-
-    for sp in splits:
-        if is_anomaly:
-            if 1 in predict[pos:min(pos + delay + 1, sp)]:
-                new_predict[pos: sp] = 1
-            else:
-                new_predict[pos: sp] = 0
-        is_anomaly = not is_anomaly
-        pos = sp
-    sp = len(label)
-
-    if is_anomaly:  # anomaly in the end
-        if 1 in predict[pos: min(pos + delay + 1, sp)]:
-            new_predict[pos: sp] = 1
-        else:
-            new_predict[pos: sp] = 0
-
-    return new_predict
+def delay_f1(score, label, k=7):
+    max_th = float(score.max())
+    max_th = np.percentile(score, 99.91)
+    print("max_th", max_th)
+    min_th = float(score.min())
+    grain = 2000
+    max_f1_1 = 0.0
+    max_f1_th_1 = 0.0
+    pre = 0.0
+    reca = 0.0
+    for i in range(0, grain + 3):
+        #print(i)
+        thres = (max_th - min_th) / grain * i + min_th
+        predict = score >= thres
+        predict = get_range_proba(predict, label, k)
+        f1, precision, recall, tp, tn, fp, fn = calc_p2p(predict, label)
+        #print(thres,f1,precision,recall)
+        if f1 > max_f1_1:
+            max_f1_1 = f1
+            max_f1_th_1 = thres
+            pre = precision
+            reca = recall
+        predict = get_range_proba(score >= max_f1_th_1, label, k)
+    return max_f1_1, pre, reca, predict
 
 
 with tf.Session().as_default():
@@ -151,39 +204,15 @@ with tf.Session().as_default():
     time1 = time.time()
     test_score = -predictor.get_score(test_values, test_missing)
     time2 = time.time()
-
+    
     print('test_time',time2-time1)
     print(len(test_score))
     print(len(test_labels))
-    max_th = float(max(test_score))
-    min_th = float(min(test_score))
-    grain = 2000
-    max_f1 = 0.0
-    max_f1_th = 0.0
-    max_pre = 0.0
-    max_recall = 0.0
-    delay_f1 = 0.0
-    delay_f1_th = 0.0
-    delay_pre = 0.0
-    delay_recall = 0.0
     label = test_labels[119:]
-    for i in range(0,grain+3):
-        thres = (max_th-min_th)/grain*i+min_th
-        predict, actual = point_adjust(test_score, label, thres=thres)
-        f1, precision, recall, tp, tn, fp, fn = calc_p2p(predict, actual)
-        if f1 > max_f1:
-            max_f1 = f1
-            max_f1_th = thres
-            max_pre = precision
-            max_recall = recall
-    print(max_f1,max_pre,max_recall)
-    for i in range(0,grain+3):
-        thres = (max_th-min_th)/grain*i+min_th
-        predict = delay_point_adjust(test_score,label,thres,7)
-        f1, precision, recall, tp, tn, fp, fn = calc_p2p(predict, label)
-        if f1 > delay_f1:
-            delay_f1 = f1
-            delay_f1_th = thres
-            delay_pre = precision
-            delay_recall = recall
-    print(delay_f1,delay_pre,delay_recall)
+    kk=7
+    if sys.argv[1]=='Yahoo':
+        kk=3
+    max_f1,max_pre,max_recall,predict = best_f1(score=test_score,label=label)
+    d_f1,d_pre,d_recall,d_predict = delay_f1(score=test_score,label=label,k=kk)
+    with open('./all_result.txt','a') as f:
+        f.write('time: %f f1: %f %f %f %f %f %f'%(time2-time1,max_f1,max_pre,max_recall,d_f1,d_pre,d_recall))
